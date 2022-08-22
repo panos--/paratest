@@ -28,6 +28,7 @@ use function sprintf;
 use function touch;
 use function uniqid;
 use function unlink;
+use function usleep;
 
 use const DIRECTORY_SEPARATOR;
 
@@ -44,12 +45,22 @@ final class WrapperWorker
 
     public const COMMAND_EXIT = "EXIT\n";
 
+    /** @var string[] */
+    private $parameters;
+    /** @var Options */
+    private $options;
+    /** @var int */
+    private $token;
     /** @var ExecutableTest|null */
     private $currentlyExecuting;
     /** @var Process */
     private $process;
     /** @var int */
     private $inExecution = 0;
+    /** @var int */
+    private $inExecutionOffset = 0;
+    /** @var int */
+    private $executionCounter = 0;
     /** @var OutputInterface */
     private $output;
     /** @var string[] */
@@ -86,18 +97,26 @@ final class WrapperWorker
         $parameters[] = '--write-to';
         $parameters[] = $this->writeToPathname;
 
-        if ($options->verbose() > 0) {
+        $this->parameters = $parameters;
+        $this->options = $options;
+        $this->token = $token;
+
+        $this->createProcess();
+    }
+
+    private function createProcess() {
+        if ($this->options->verbose() > 0) {
             $this->output->writeln(sprintf(
                 'Starting WrapperWorker via: %s',
-                implode(' ', array_map('\escapeshellarg', $parameters))
+                implode(' ', array_map('\escapeshellarg', $this->parameters))
             ));
         }
 
         $this->input   = new InputStream();
         $this->process = new Process(
-            $parameters,
-            $options->cwd(),
-            $options->fillEnvWithTokens($token),
+            $this->parameters,
+            $this->options->cwd(),
+            $this->options->fillEnvWithTokens($this->token),
             $this->input,
             null
         );
@@ -153,6 +172,15 @@ final class WrapperWorker
     public function reset(): void
     {
         $this->currentlyExecuting = null;
+        if (++$this->executionCounter % 10 == 0) {
+            $this->stop();
+            while ($this->isRunning()) {
+                usleep(10000);
+            }
+            $this->createProcess();
+            $this->start();
+            $this->inExecutionOffset = $this->inExecution;
+        }
     }
 
     public function stop(): void
@@ -173,7 +201,7 @@ final class WrapperWorker
     {
         clearstatcache(true, $this->writeToPathname);
 
-        return $this->inExecution === filesize($this->writeToPathname);
+        return $this->inExecution === filesize($this->writeToPathname) + $this->inExecutionOffset;
     }
 
     public function isRunning(): bool
